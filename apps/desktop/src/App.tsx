@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { Toaster } from 'react-hot-toast';
 import { AnimatePresence, motion } from 'framer-motion';
@@ -36,7 +36,35 @@ const PAGE_MAP: Record<PageId, React.ReactNode> = {
 
 function AppContent() {
   const [activePage, setActivePage] = useState<PageId>('dashboard');
-  const { isAuthenticated } = useAuthStore();
+ const [authChecked, setAuthChecked] = useState(false);
+  const { isAuthenticated, refreshUser, logout } = useAuthStore();
+
+  useEffect(() => {
+    const verifySession = async () => {
+      const accessToken = localStorage.getItem('accessToken');
+      if (!accessToken) {
+        logout();
+        setAuthChecked(true);
+        return;
+      }
+
+      try {
+        await refreshUser();
+      } finally {
+        setAuthChecked(true);
+      }
+    };
+
+    verifySession();
+  }, [refreshUser, logout]);
+
+  if (!authChecked) {
+    return (
+      <div className="min-h-screen flex items-center justify-center bg-slate-950 text-slate-300 text-sm">
+        Verifying session...
+      </div>
+    );
+  }
 
   if (!isAuthenticated) return <LoginPage />;
 

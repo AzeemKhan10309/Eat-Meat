@@ -3,17 +3,18 @@ const path = require('path');
 const fs   = require('fs');
 
 // ── Early diagnostic — written before anything else ───────────────────────────
-const DIAG = 'C:\\temp\\em_diag.txt';
-try { fs.mkdirSync('C:\\temp', { recursive: true }); } catch(_) {}
+const DIAG = (process.env.USERPROFILE || process.env.HOME || 'C:\\temp') + '\\em_diag.txt';
 function diag(msg) {
-  try { fs.appendFileSync(DIAG, `[${new Date().toISOString()}] ${msg}\n`); } catch(_) {}
+  try { fs.appendFileSync(DIAG, `[${new Date().toISOString()}] ${msg}\n`); } catch(e) {
+    try { fs.appendFileSync('C:\\Users\\Public\\em_diag.txt', `[${new Date().toISOString()}] ${msg}\n`); } catch(_) {}
+  }
   console.log(msg);
 }
 diag('=== STARTUP ===');
 diag(`node version: ${process.version}`);
-diag(`isPackaged: ${app.isPackaged}`);
-diag(`execPath: ${process.execPath}`);
-diag(`resourcesPath: ${process.resourcesPath}`);
+try { diag(`isPackaged: ${app.isPackaged}`); } catch(e) { diag(`isPackaged ERR: ${e.message}`); }
+try { diag(`execPath: ${process.execPath}`); } catch(e) { diag(`execPath ERR: ${e.message}`); }
+try { diag(`resourcesPath: ${process.resourcesPath}`); } catch(e) { diag(`resourcesPath ERR: ${e.message}`); }
 diag(`__dirname: ${__dirname}`);
 
 // ── Single-instance lock ──────────────────────────────────────────────────────
@@ -27,9 +28,15 @@ if (!gotLock) {
 }
 
 // Detect production by bundle existence — more reliable than app.isPackaged
-const _bundleCheck = path.join(process.resourcesPath, 'server', 'bundle.js');
-const isDev = !fs.existsSync(_bundleCheck);
-diag(`bundle exists: ${!isDev}  (checked: ${_bundleCheck})`);
+let isDev = true;
+try {
+  const _bundleCheck = path.join(process.resourcesPath, 'server', 'bundle.js');
+  isDev = !fs.existsSync(_bundleCheck);
+  diag(`bundle exists: ${!isDev}  (checked: ${_bundleCheck})`);
+} catch(e) {
+  diag(`isDev detection error: ${e.message} — defaulting to isPackaged`);
+  isDev = !app.isPackaged;
+}
 diag(`isDev: ${isDev}`);
 
 app.disableHardwareAcceleration();
