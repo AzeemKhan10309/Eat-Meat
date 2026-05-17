@@ -91,6 +91,26 @@
       {
         "from": "../../node_modules/.prisma/client",
         "to": "server/node_modules/.prisma/client"
+      },
+      {
+        "from": "../../node_modules/node-thermal-printer",
+        "to": "server/node_modules/node-thermal-printer"
+      },
+      {
+        "from": "../../node_modules/iconv-lite",
+        "to": "server/node_modules/iconv-lite"
+      },
+      {
+        "from": "../../node_modules/pngjs",
+        "to": "server/node_modules/pngjs"
+      },
+      {
+        "from": "../../node_modules/unorm",
+        "to": "server/node_modules/unorm"
+      },
+      {
+        "from": "../../node_modules/write-file-queue",
+        "to": "server/node_modules/write-file-queue"
       }
     ],
     "win": {

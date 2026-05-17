@@ -603,6 +603,17 @@ router.post('/printer/detect', authenticate, async (_req, res) => {
   }
 });
 
+router.post('/printer/select', authenticate, async (req, res) => {
+  try {
+    const { printerName } = req.body as { printerName?: string };
+    const status = await printerService.selectPrinter(printerName ?? '');
+    return sendSuccess(res, status, printerName ? `Selected: ${printerName}` : 'Printer cleared');
+  } catch (err: unknown) {
+    const e = err as { message?: string };
+    return sendError(res, e.message || 'Failed to select printer', 500);
+  }
+});
+
 router.post('/printer/test', authenticate, async (req, res) => {
   try {
     const result = await printerService.testPrint(req.body?.printerName);

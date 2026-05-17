@@ -3,8 +3,7 @@ import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { Save, User, Settings2, Printer, Shield, Plus, Wifi, WifiOff, RefreshCw, CheckCircle2, AlertCircle, Zap } from 'lucide-react';
 import { usePrinterStatus } from '@/hooks/usePrinterStatus';
 import api from '@/services/api';
-// eslint-disable-next-line @typescript-eslint/no-unused-vars
-import { Button, Input, Card, CardHeader, CardTitle, CardContent, Badge } from '@/components/ui';
+import { Button, Input, Card } from '@/components/ui';
 import { cn } from '@/lib/utils';
 import toast from 'react-hot-toast';
 
@@ -43,9 +42,31 @@ export default function SettingsPage() {
   const [showAddUser, setShowAddUser] = useState(false);
   const [testPrintMsg, setTestPrintMsg] = useState<{ ok: boolean; text: string } | null>(null);
   const { status: printerStatus, loading: printerLoading, forceDetect, testPrint } = usePrinterStatus();
+  const [printerList, setPrinterList] = useState<string[]>([]);
+  const [printerListLoading, setPrinterListLoading] = useState(false);
 
-  // eslint-disable-next-line @typescript-eslint/no-unused-vars
-  const { data: settings } = useQuery({
+  const loadPrinterList = async () => {
+    setPrinterListLoading(true);
+    try {
+      const { data } = await api.get('/printer/list');
+      setPrinterList(data.data ?? []);
+    } catch {
+      setPrinterList([]);
+    } finally {
+      setPrinterListLoading(false);
+    }
+  };
+
+  const selectPrinter = async (name: string) => {
+    try {
+      await api.post('/printer/select', { printerName: name });
+      await forceDetect();
+    } catch {
+      toast.error('Failed to select printer');
+    }
+  };
+
+  useQuery({
     queryKey: ['settings'],
     queryFn: () => api.get('/settings').then(r => r.data.data),
     onSuccess: (data: RestaurantSettings) => setSettingsForm(data),
@@ -314,6 +335,52 @@ export default function SettingsPage() {
               </div>
             </Card>
 
+            {/* Manual printer selection */}
+            <Card className="p-4 space-y-3">
+              <div className="flex items-center justify-between">
+                <h4 className="text-sm font-semibold text-foreground">All Available Printers</h4>
+                <button
+                  onClick={loadPrinterList}
+                  disabled={printerListLoading}
+                  className="flex items-center gap-1.5 text-xs text-muted-foreground hover:text-foreground transition-colors disabled:opacity-50"
+                >
+                  <RefreshCw className={cn('w-3 h-3', printerListLoading && 'animate-spin')} />
+                  Refresh
+                </button>
+              </div>
+
+              {printerList.length === 0 && !printerListLoading && (
+                <p className="text-xs text-muted-foreground">
+                  Click Refresh to list all printers installed on this machine.
+                </p>
+              )}
+
+              {printerList.length > 0 && (
+                <div className="space-y-1.5">
+                  {printerList.map(name => (
+                    <div key={name} className="flex items-center justify-between gap-2 py-1.5 px-2 rounded-lg hover:bg-accent/50">
+                      <span className={cn(
+                        'text-xs truncate',
+                        printerStatus.name === name ? 'text-orange-400 font-medium' : 'text-foreground'
+                      )}>
+                        {name}
+                        {printerStatus.name === name && (
+                          <span className="ml-2 text-[10px] text-orange-400">(active)</span>
+                        )}
+                      </span>
+                      <button
+                        onClick={() => selectPrinter(name)}
+                        disabled={printerStatus.name === name}
+                        className="shrink-0 text-[11px] px-2.5 py-0.5 rounded-md bg-orange-500/10 text-orange-400 hover:bg-orange-500/20 disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
+                      >
+                        {printerStatus.name === name ? 'Selected' : 'Select'}
+                      </button>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </Card>
+
             {/* How it works */}
             <Card className="p-4 space-y-3">
               <h4 className="text-sm font-semibold text-foreground">How auto-detection works</h4>
@@ -337,34 +404,34 @@ export default function SettingsPage() {
             <Card className="p-4">
               <h4 className="font-semibold text-sm text-foreground mb-3">Receipt Preview</h4>
               <div className="font-mono text-[11px] bg-muted p-3 rounded-lg text-muted-foreground whitespace-pre leading-relaxed overflow-x-auto">
-{`================================================
-          EAT & MEET RESTAURANT
-     12 Baker Street, London W1U 3BG
-           +44 20 7946 0000
+{`
+        EAT & MEET RESTAURANT
+   12 Baker Street, London W1U 3BG
+         Tel: +44 20 7946 0000
 ================================================
-Order:   ORD-20241201-0001
-Date:    01/12/2024 19:45
-Cashier: James Davis
-Type:    TAKEAWAY
+Order #  : ORD-20241201-0001
+Date     : 01/12/2024 19:45
+Cashier  : James Davis
+Type     : DINE IN
 ------------------------------------------------
-ITEM                                       TOTAL
+ QTY  ITEM                           AMOUNT
 ------------------------------------------------
-Truffle Wagyu Burger
-  1 x Rs24.99                           Rs24.99
-Loaded Fries
-  2 x Rs7.99                            Rs15.98
+  1x  Truffle Wagyu Burger          Rs24.99
+  2x  Loaded Fries                  Rs15.98
+      @ Rs7.99 each
 ------------------------------------------------
-Subtotal:                               Rs40.97
-Tax:                                     Rs4.10
+  Subtotal                          Rs40.97
+  Tax                                Rs4.10
 ================================================
-TOTAL:                                  Rs45.07
-------------------------------------------------
-Payment:                                   CASH
-Cash:                                   Rs50.00
-Change:                                  Rs4.93
+  ** TOTAL **                       Rs45.07
 ================================================
-          Thank you for dining with us!
-            www.eatandmeet.co.uk`}
+Payment  :                             CASH
+Cash     :                          Rs50.00
+Change   :                           Rs4.93
+================================================
+
+       Thank you for dining with us!
+         www.eatandmeet.co.uk`}
               </div>
             </Card>
           </div>

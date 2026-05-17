@@ -26,6 +26,10 @@ build({
     '@prisma/client',
     '.prisma',
     '.prisma/client',
+    // node-thermal-printer uses a native Windows printer addon; keep it as an
+    // external node_module so its .node binary can be copied to resources instead
+    // of being inlined (where the binary path would break at runtime).
+    'node-thermal-printer',
   ],
   plugins: [workspaceAliasPlugin],
   tsconfig: path.join(__dirname, 'tsconfig.json'),
