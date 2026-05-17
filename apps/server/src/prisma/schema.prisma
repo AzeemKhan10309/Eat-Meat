@@ -1,0 +1,518 @@
+// Eat & Meet - Prisma Schema
+// Database: SQL Server
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// ─── USERS & AUTH ─────────────────────────────────────────────────────────────
+
+model User {
+  id           String   @id @default(uuid())
+  name         String
+  email        String   @unique
+  password     String
+  role         UserRole @default(CASHIER)
+  isActive     Boolean  @default(true)
+  avatar       String?
+  phone        String?
+  pin          String?  // 4-digit PIN for quick login
+  lastLogin    DateTime?
+  loginAttempts Int     @default(0)
+  lockedUntil  DateTime?
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  orders        Order[]
+  payments      Payment[]
+  auditLogs     AuditLog[]
+  dayCloses     DayClose[]
+  expenses      Expense[]
+  issuedBy      InventoryIssue[] @relation("IssuedBy")
+  approvedBy    InventoryIssue[] @relation("ApprovedBy")
+
+  @@map("users")
+}
+
+enum UserRole {
+  SUPER_ADMIN
+  ADMIN
+  MANAGER
+  CASHIER
+  KITCHEN_STAFF
+}
+
+model AuditLog {
+  id         String   @id @default(uuid())
+  userId     String
+  user       User     @relation(fields: [userId], references: [id])
+  action     String
+  resource   String
+  resourceId String?
+  oldValues  String?  // JSON
+  newValues  String?  // JSON
+  ipAddress  String?
+  userAgent  String?
+  createdAt  DateTime @default(now())
+
+  @@map("audit_logs")
+}
+
+model RefreshToken {
+  id        String   @id @default(uuid())
+  userId    String
+  token     String   @unique
+  expiresAt DateTime
+  createdAt DateTime @default(now())
+
+  @@map("refresh_tokens")
+}
+
+// ─── RESTAURANT SETTINGS ──────────────────────────────────────────────────────
+
+model RestaurantSettings {
+  id               String  @id @default(uuid())
+  name             String
+  address          String?
+  phone            String?
+  email            String?
+  taxId            String?
+  logoUrl          String?
+  currencySymbol   String  @default("Rs")
+  currencyCode     String  @default("PKR")
+  taxRate          Float   @default(0.1)
+  serviceChargeRate Float  @default(0.0)
+  receiptFooter    String?
+  receiptHeader    String?
+  timezone         String  @default("Europe/London")
+  openTime         String  @default("09:00")
+  closeTime        String  @default("23:00")
+  isOpen           Boolean @default(true)
+  updatedAt        DateTime @updatedAt
+
+  @@map("restaurant_settings")
+}
+
+// ─── CUSTOMERS ────────────────────────────────────────────────────────────────
+
+model Customer {
+  id            String   @id @default(uuid())
+  name          String
+  email         String?  @unique
+  phone         String?
+  address       String?
+  loyaltyPoints Int      @default(0)
+  totalOrders   Int      @default(0)
+  totalSpent    Float    @default(0)
+  notes         String?
+  isActive      Boolean  @default(true)
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+
+  orders        Order[]
+
+  @@map("customers")
+}
+
+// ─── ORDERS ───────────────────────────────────────────────────────────────────
+
+model Order {
+  id            String        @id @default(uuid())
+  orderNumber   String        @unique
+  type          OrderType     @default(TAKEAWAY)
+  status        OrderStatus   @default(PENDING)
+  customerId    String?
+  customer      Customer?     @relation(fields: [customerId], references: [id])
+  subtotal      Float
+  discountId    String?
+  discount      Discount?     @relation(fields: [discountId], references: [id])
+  discountAmount Float        @default(0)
+  taxAmount     Float         @default(0)
+  serviceCharge Float         @default(0)
+  totalAmount   Float
+  paidAmount    Float         @default(0)
+  changeAmount  Float         @default(0)
+  paymentStatus PaymentStatus @default(PENDING)
+  notes         String?
+  staffId       String
+  staff         User          @relation(fields: [staffId], references: [id])
+  servedAt      DateTime?
+  cancelledAt   DateTime?
+  cancellationReason String?
+  createdAt     DateTime      @default(now())
+  updatedAt     DateTime      @updatedAt
+
+  items         OrderItem[]
+  payments      Payment[]
+
+  @@map("orders")
+}
+
+enum OrderType {
+  DINE_IN
+  TAKEAWAY
+  DELIVERY
+}
+
+enum OrderStatus {
+  PENDING
+  CONFIRMED
+  PREPARING
+  READY
+  SERVED
+  CANCELLED
+  REFUNDED
+}
+
+enum PaymentStatus {
+  PENDING
+  COMPLETED
+  FAILED
+  REFUNDED
+  PARTIAL
+}
+
+model OrderItem {
+  id              String        @id @default(uuid())
+  orderId         String
+  order           Order         @relation(fields: [orderId], references: [id], onDelete: Cascade)
+  inventoryItemId String
+  inventoryItem   InventoryItem @relation(fields: [inventoryItemId], references: [id])
+  quantity        Int
+  unitPrice       Float
+  totalPrice      Float
+  discountAmount  Float         @default(0)
+  notes           String?
+  modifiers       String?       // JSON
+  createdAt       DateTime      @default(now())
+
+  @@map("order_items")
+}
+
+// ─── PAYMENTS ─────────────────────────────────────────────────────────────────
+
+model Payment {
+  id              String        @id @default(uuid())
+  orderId         String
+  order           Order         @relation(fields: [orderId], references: [id])
+  method          PaymentMethod
+  amount          Float
+  cashReceived    Float?
+  changeGiven     Float?
+  cardLast4       String?
+  referenceNumber String?
+  status          PaymentStatus @default(COMPLETED)
+  staffId         String
+  staff           User          @relation(fields: [staffId], references: [id])
+  processedAt     DateTime      @default(now())
+
+  @@map("payments")
+}
+
+enum PaymentMethod {
+  CASH
+  CARD
+  BANK_TRANSFER
+  MIXED
+}
+
+// ─── DISCOUNTS & DEALS ────────────────────────────────────────────────────────
+
+model Discount {
+  id                String        @id @default(uuid())
+  name              String
+  code              String?       @unique
+  type              DiscountType
+  level             DiscountLevel
+  value             Float
+  minOrderAmount    Float?
+  maxDiscountAmount Float?
+  applicableItemIds String?       // JSON array
+  requiresApproval  Boolean       @default(false)
+  isActive          Boolean       @default(true)
+  validFrom         DateTime?
+  validTo           DateTime?
+  usageCount        Int           @default(0)
+  maxUsage          Int?
+  createdAt         DateTime      @default(now())
+  updatedAt         DateTime      @updatedAt
+
+  orders            Order[]
+
+  @@map("discounts")
+}
+
+enum DiscountType {
+  PERCENTAGE
+  FIXED
+}
+
+enum DiscountLevel {
+  ITEM
+  BILL
+}
+
+model Deal {
+  id             String    @id @default(uuid())
+  name           String
+  description    String?
+  type           DealType
+  discountValue  Float
+  applicableItemIds String? // JSON
+  bundleItems    String?   // JSON
+  isActive       Boolean   @default(true)
+  startTime      String?   // HH:mm
+  endTime        String?   // HH:mm
+  daysOfWeek     String?   // JSON array [0-6]
+  validFrom      DateTime?
+  validTo        DateTime?
+  createdAt      DateTime  @default(now())
+  updatedAt      DateTime  @updatedAt
+
+  @@map("deals")
+}
+
+enum DealType {
+  BUY_ONE_GET_ONE
+  COMBO
+  BUNDLE
+  HAPPY_HOUR
+  PERCENTAGE_OFF
+  FIXED_PRICE
+}
+
+// ─── INVENTORY ────────────────────────────────────────────────────────────────
+
+model InventoryCategory {
+  id    String          @id @default(uuid())
+  name  String          @unique
+  items InventoryItem[]
+
+  @@map("inventory_categories")
+}
+
+model Supplier {
+  id            String          @id @default(uuid())
+  name          String
+  contactPerson String?
+  email         String?
+  phone         String?
+  address       String?
+  taxId         String?
+  isActive      Boolean         @default(true)
+  createdAt     DateTime        @default(now())
+  updatedAt     DateTime        @updatedAt
+
+  items         InventoryItem[]
+  purchaseOrders PurchaseOrder[]
+
+  @@map("suppliers")
+}
+
+model InventoryItem {
+  id              String             @id @default(uuid())
+  name            String
+  description     String?
+  sku             String?            @unique
+  barcode         String?            @unique
+  categoryId      String?
+  category        InventoryCategory? @relation(fields: [categoryId], references: [id])
+  unit            String
+  currentStock    Float              @default(0)
+  minStockLevel   Float              @default(0)
+  maxStockLevel   Float              @default(999)
+  reorderPoint    Float              @default(0)
+  costPerUnit     Float              @default(0)
+  sellingPrice    Float              @default(0)
+  supplierId      String?
+  supplier        Supplier?          @relation(fields: [supplierId], references: [id])
+  expiryDate      DateTime?
+  location        String?
+  isActive        Boolean            @default(true)
+  lastRestockedAt DateTime?
+  createdAt       DateTime           @default(now())
+  updatedAt       DateTime           @updatedAt
+
+  movements       StockMovement[]
+  purchaseItems   PurchaseOrderItem[]
+  issueItems      InventoryIssueItem[]
+  orderItems      OrderItem[]
+
+  @@map("inventory_items")
+}
+
+model StockMovement {
+  id              String             @id @default(uuid())
+  inventoryItemId String
+  inventoryItem   InventoryItem      @relation(fields: [inventoryItemId], references: [id])
+  type            StockMovementType
+  quantity        Float
+  previousStock   Float
+  newStock        Float
+  referenceId     String?
+  referenceType   String?
+  notes           String?
+  createdById     String
+  createdAt       DateTime           @default(now())
+
+  @@map("stock_movements")
+}
+
+enum StockMovementType {
+  PURCHASE
+  SALE
+  WASTE
+  ADJUSTMENT
+  ISSUE
+  RETURN
+}
+
+model PurchaseOrder {
+  id               String              @id @default(uuid())
+  poNumber         String              @unique
+  supplierId       String
+  supplier         Supplier            @relation(fields: [supplierId], references: [id])
+  status           POStatus            @default(DRAFT)
+  totalAmount      Float               @default(0)
+  notes            String?
+  expectedDelivery DateTime?
+  receivedAt       DateTime?
+  createdById      String
+  createdAt        DateTime            @default(now())
+  updatedAt        DateTime            @updatedAt
+
+  items            PurchaseOrderItem[]
+
+  @@map("purchase_orders")
+}
+
+enum POStatus {
+  DRAFT
+  SENT
+  RECEIVED
+  PARTIAL
+  CANCELLED
+}
+
+model PurchaseOrderItem {
+  id              String        @id @default(uuid())
+  purchaseOrderId String
+  purchaseOrder   PurchaseOrder @relation(fields: [purchaseOrderId], references: [id], onDelete: Cascade)
+  inventoryItemId String
+  inventoryItem   InventoryItem @relation(fields: [inventoryItemId], references: [id])
+  quantity        Float
+  receivedQuantity Float        @default(0)
+  unitCost        Float
+  totalCost       Float
+
+  @@map("purchase_order_items")
+}
+
+model InventoryIssue {
+  id          String               @id @default(uuid())
+  issueNumber String               @unique
+  issuedTo    String
+  status      IssueStatus          @default(PENDING)
+  issuedById  String
+  issuedBy    User                 @relation("IssuedBy", fields: [issuedById], references: [id])
+  approvedById String?
+  approvedBy  User?                @relation("ApprovedBy", fields: [approvedById], references: [id])
+  notes       String?
+  createdAt   DateTime             @default(now())
+  updatedAt   DateTime             @updatedAt
+
+  items       InventoryIssueItem[]
+
+  @@map("inventory_issues")
+}
+
+enum IssueStatus {
+  PENDING
+  APPROVED
+  ISSUED
+  REJECTED
+}
+
+model InventoryIssueItem {
+  id             String         @id @default(uuid())
+  issueId        String
+  issue          InventoryIssue @relation(fields: [issueId], references: [id], onDelete: Cascade)
+  inventoryItemId String
+  inventoryItem  InventoryItem  @relation(fields: [inventoryItemId], references: [id])
+  quantity       Float
+
+  @@map("inventory_issue_items")
+}
+
+// ─── EXPENSES ─────────────────────────────────────────────────────────────────
+
+enum ExpenseCategory {
+  ELECTRICITY
+  RENT
+  STAFF_SALARY
+  INTERNET
+  MAINTENANCE
+  DELIVERY
+  MARKETING
+  SUPPLIES
+  UTILITIES
+  TRANSPORT
+  EQUIPMENT
+  MISCELLANEOUS
+}
+
+enum RecurringType {
+  NONE
+  DAILY
+  WEEKLY
+  MONTHLY
+}
+
+model Expense {
+  id            String          @id @default(uuid())
+  title         String
+  category      ExpenseCategory
+  description   String?
+  amount        Float
+  expenseDate   DateTime
+  paymentMethod String          @default("CASH")
+  receiptUrl    String?
+  recurring     RecurringType   @default(NONE)
+  addedById     String
+  addedBy       User            @relation(fields: [addedById], references: [id])
+  createdAt     DateTime        @default(now())
+  updatedAt     DateTime        @updatedAt
+
+  @@map("expenses")
+}
+
+// ─── DAY CLOSE ────────────────────────────────────────────────────────────────
+
+model DayClose {
+  id             String    @id @default(uuid())
+  date           DateTime
+  openingCash    Float     @default(0)
+  closingCash    Float     @default(0)
+  cashSales      Float     @default(0)
+  cardSales      Float     @default(0)
+  bankSales      Float     @default(0)
+  totalSales     Float     @default(0)
+  totalOrders    Int       @default(0)
+  totalRefunds   Float     @default(0)
+  totalDiscount  Float     @default(0)
+  totalExpenses  Float     @default(0)
+  netRevenue     Float     @default(0)
+  variance       Float     @default(0)
+  notes          String?
+  approvedById   String?
+  closedById     String
+  closedBy       User      @relation(fields: [closedById], references: [id])
+  closedAt       DateTime  @default(now())
+
+  @@map("day_closes")
+}

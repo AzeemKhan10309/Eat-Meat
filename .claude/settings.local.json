@@ -1,0 +1,8 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(node -e \"require\\('d:/projects/eat-and-meet/eat-and-meet/apps/desktop/node_modules/cross-env'\\)\")",
+      "Bash(npm install *)"
+    ]
+  }
+}

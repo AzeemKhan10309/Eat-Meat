@@ -1,0 +1,26 @@
+{
+  "compilerOptions": {
+    "target": "ES2020",
+    "useDefineForClassFields": true,
+    "lib": ["ES2020", "DOM", "DOM.Iterable"],
+    "module": "ESNext",
+    "skipLibCheck": true,
+    "moduleResolution": "bundler",
+    "allowImportingTsExtensions": true,
+    "resolveJsonModule": true,
+    "isolatedModules": true,
+    "noEmit": true,
+    "jsx": "react-jsx",
+    "strict": true,
+    "noUnusedLocals": true,
+    "noUnusedParameters": true,
+    "noFallthroughCasesInSwitch": true,
+    "paths": {
+      "@eat-and-meet/shared": ["./packages/shared/src/index.ts"],
+      "@eat-and-meet/types": ["./packages/types/src/index.ts"],
+      "@eat-and-meet/config": ["./packages/config/src/index.ts"]
+    }
+  },
+  "include": ["apps", "packages"],
+  "exclude": ["node_modules", "dist", "build"]
+}
