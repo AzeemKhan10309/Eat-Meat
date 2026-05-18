@@ -17,37 +17,6 @@ const THERMAL_KEYWORDS = [
   'pos-', 'pos80', 'pos58', '80mm', '58mm', 'gp-', 'bt-',
 ];
 
-interface ThermalPrinterInstance {
-  alignCenter(): void; alignLeft(): void;
-  bold(on: boolean): void; setTextSize(w: number, h: number): void; setTextNormal(): void;
-  println(text: string): void; drawLine(): void; newLine(): void; cut(): void;
-  tableCustom(cols: { text: string; align: string; width: number }[]): void;
-  leftRight(left: string, right: string): void;
-  execute(): Promise<void>;
-}
-interface ThermalPrinterCtor {
-  new(opts: { type: unknown; interface: string; characterSet?: unknown;
-              removeSpecialCharacters?: boolean; lineCharacter?: string; width?: number }
-  ): ThermalPrinterInstance;
-}
-
-let ThermalPrinter: ThermalPrinterCtor | undefined;
-let PrinterTypes: Record<string, unknown> | undefined;
-let CharacterSet: Record<string, unknown> | undefined;
-try {
-  // eslint-disable-next-line @typescript-eslint/no-var-requires
-  const m = require('node-thermal-printer') as {
-    ThermalPrinter: ThermalPrinterCtor;
-    PrinterTypes: Record<string, unknown>;
-    CharacterSet: Record<string, unknown>;
-  };
-  ThermalPrinter = m.ThermalPrinter;
-  PrinterTypes   = m.PrinterTypes;
-  CharacterSet   = m.CharacterSet;
-  logger.info('node-thermal-printer loaded (ESC/POS available)');
-} catch {
-  logger.warn('node-thermal-printer unavailable — text fallback only');
-}
 
 export interface PrinterStatus {
   detected: boolean;
@@ -105,7 +74,12 @@ export class PrinterService {
 
   private getWindowsPrinters(): Promise<string[]> {
     return new Promise(resolve => {
-      const cmd = `"${PS_EXE}" -NonInteractive -Command "Get-Printer | Select-Object -ExpandProperty Name | ConvertTo-Json -Compress"`;
+      // Get-Printer requires PrintManagement (absent on Windows Home/IoT).
+      // Win32_Printer WMI works on all editions — use as fallback.
+      const psBody =
+        `try{Get-Printer -ErrorAction Stop|Select-Object -ExpandProperty Name|ConvertTo-Json -Compress}` +
+        `catch{Get-WmiObject Win32_Printer|Select-Object -ExpandProperty Name|ConvertTo-Json -Compress}`;
+      const cmd = `"${PS_EXE}" -NonInteractive -Command "${psBody}"`;
       exec(cmd, { timeout: 8000 }, (err, stdout) => {
         if (err || !stdout.trim()) { resolve([]); return; }
         try {
@@ -135,7 +109,12 @@ export class PrinterService {
   private checkOnline(printerName: string): Promise<boolean> {
     return new Promise(resolve => {
       const safe = printerName.replace(/'/g, "''");
-      const cmd = `"${PS_EXE}" -NonInteractive -Command "(Get-Printer -Name '${safe}' -ErrorAction SilentlyContinue).PrinterStatus"`;
+      // Get-Printer absent on Windows Home — WMI PrinterStatus works everywhere.
+      // Get-Printer returns strings ("Normal","Idle"); WMI returns integers (3=Idle, 4=Printing).
+      const psBody =
+        `try{(Get-Printer -Name '${safe}' -ErrorAction Stop).PrinterStatus}` +
+        `catch{$p=Get-WmiObject Win32_Printer|Where-Object{$_.Name -eq '${safe}'}|Select-Object -First 1;if($p){$p.PrinterStatus}}`;
+      const cmd = `"${PS_EXE}" -NonInteractive -Command "${psBody}"`;
       exec(cmd, { timeout: 5000 }, (err, stdout) => {
         if (err) { resolve(false); return; }
         resolve(['Normal', 'Idle', '3', '4', '0'].includes(stdout.trim()));
@@ -150,7 +129,7 @@ export class PrinterService {
     if (found && found !== hadName) {
       this.currentPrinter = found;
       this.isOnline        = await this.checkOnline(found);
-      this.printMethod     = ThermalPrinter ? 'escpos' : 'text';
+      this.printMethod     = 'text';
       logger.info(`Printer detected: "${found}" | online: ${this.isOnline} | method: ${this.printMethod}`);
       this.io?.emit('printer:connected', this.getStatus());
     } else if (!found && hadName) {
@@ -181,7 +160,7 @@ export class PrinterService {
   async selectPrinter(name: string): Promise<PrinterStatus> {
     this.currentPrinter = name || null;
     this.isOnline        = name ? await this.checkOnline(name) : false;
-    this.printMethod     = name ? (ThermalPrinter ? 'escpos' : 'text') : 'none';
+    this.printMethod     = name ? 'text' : 'none';
     const status = this.getStatus();
     this.io?.emit(name ? 'printer:connected' : 'printer:disconnected', status);
     logger.info(`Printer manually selected: "${name || 'none'}"`);
@@ -313,152 +292,87 @@ export class PrinterService {
 
   // ── ESC/POS printing ──────────────────────────────────────────────────────
 
-  private async printESCPOS(data: ReceiptData, printerName: string): Promise<boolean> {
-    if (!ThermalPrinter) return false;
-    try {
-      const c   = data.currencySymbol;
-      const fmt = (n: number) => `${c}${n.toFixed(2)}`;
-
-      const p = new ThermalPrinter({
-        type:                    PrinterTypes!.EPSON,
-        interface:               `printer:${printerName}`,
-        characterSet:            CharacterSet!.PC437_USA,
-        removeSpecialCharacters: false,
-        lineCharacter:           '-',
-        width:                   this.W,
-      });
-
-      const sep = (ch: string) => p.println(ch.repeat(this.W));
-
-      // ── Header ──
-      p.alignCenter();
-      p.println('');
-      p.println('================================');
-      p.bold(true); p.setTextSize(1, 1);
-      p.println(data.restaurantName.toUpperCase().slice(0, this.W));
-      p.bold(false); p.setTextNormal();
-      p.println(data.restaurantAddress.slice(0, this.W));
-      if (data.restaurantPhone)
-        p.println(`Tel: ${data.restaurantPhone}`.slice(0, this.W));
-      p.println('================================');
-      p.println('');
-
-      // ── Order meta — each on its own line, label padded ──
-      p.alignLeft();
-      const meta = (lbl: string, val: string) => {
-        const label  = lbl.padEnd(10);
-        const colon  = ': ';
-        const maxV   = this.W - label.length - colon.length;
-        p.println(label + colon + val.slice(0, maxV));
-      };
-      meta('Order #',  data.orderNumber);
-      meta('Date',     data.date);
-      meta('Cashier',  data.cashier);
-      meta('Type',     data.orderType.replace(/_/g, ' '));
-      p.drawLine();
-
-      // ── Items header ──
-      p.bold(true);
-      p.tableCustom([
-        { text: 'QTY',    align: 'RIGHT', width: 0.10 },
-        { text: 'ITEM',   align: 'LEFT',  width: 0.68 },
-        { text: 'AMOUNT', align: 'RIGHT', width: 0.22 },
-      ]);
-      p.bold(false);
-      p.drawLine();
-
-      // ── Items ──
-      for (const item of data.items) {
-        const name = item.name.length > 32
-          ? item.name.slice(0, 30) + '..'
-          : item.name;
-        p.tableCustom([
-          { text: `${item.quantity}x`, align: 'RIGHT', width: 0.10 },
-          { text: name,                align: 'LEFT',  width: 0.68 },
-          { text: fmt(item.total),     align: 'RIGHT', width: 0.22 },
-        ]);
-        if (item.quantity > 1)
-          p.println(`       @ ${fmt(item.unitPrice)} each`);
-      }
-
-      // ── Totals ──
-      p.drawLine();
-      p.leftRight('Subtotal',     fmt(data.subtotal));
-      if (data.discount      > 0) p.leftRight('Discount',       `-${fmt(data.discount)}`);
-      if (data.serviceCharge > 0) p.leftRight('Service Charge', fmt(data.serviceCharge));
-      if (data.tax           > 0) p.leftRight('Tax',            fmt(data.tax));
-      sep('=');
-      p.bold(true); p.setTextSize(1, 1);
-      p.leftRight('** TOTAL **', fmt(data.total));
-      p.bold(false); p.setTextNormal();
-      sep('=');
-
-      // ── Payment ──
-      p.leftRight('Payment :', data.paymentMethod);
-      if (data.cashReceived != null) {
-        p.leftRight('Cash    :', fmt(data.cashReceived));
-        p.leftRight('Change  :', fmt(data.change ?? 0));
-      }
-      sep('=');
-
-      // ── Footer ──
-      if (data.footer) {
-        p.alignCenter();
-        p.println('');
-        data.footer.split('\n').forEach(fl => p.println(fl.slice(0, this.W)));
-      }
-
-      // 5 newlines to clear the cutter blade, then cut
-      p.newLine(); p.newLine(); p.newLine(); p.newLine(); p.newLine();
-      p.cut();
-      await p.execute();
-      return true;
-    } catch (err) {
-      logger.warn('ESC/POS failed, will fallback to text:', (err as Error).message);
-      return false;
-    }
+  private async printESCPOS(_data: ReceiptData, _printerName: string): Promise<boolean> {
+    // The printer: interface requires the native `printer` npm package as `driver`.
+    // It is not bundled — skip this path entirely; printReceipt falls to the winspool path.
+    return false;
   }
 
-  // ── Text fallback ─────────────────────────────────────────────────────────
+  // ── Text fallback — raw bytes via winspool.drv P/Invoke (RAW data type) ───
 
   private async printText(text: string, printerName: string): Promise<boolean> {
-    const tempFile = join(tmpdir(), `receipt_${Date.now()}.bin`);
+    const ts      = Date.now();
+    const tempBin = join(tmpdir(), `rcpt_${ts}.bin`);
+    const tempPs  = join(tmpdir(), `rprint_${ts}.ps1`);
     try {
+      const init    = Buffer.from([0x1B, 0x40]); // ESC @ — reset printer state
       const textBuf = Buffer.from(text.replace(/\r?\n/g, '\r\n'), 'latin1');
-      const payload = Buffer.concat([textBuf, this.CUT_BYTES]);
-      writeFileSync(tempFile, payload);
+      writeFileSync(tempBin, Buffer.concat([init, textBuf, this.CUT_BYTES]));
 
-      await new Promise<void>((resolve, reject) => {
-        const safePath    = tempFile.replace(/'/g, "''");
-        const safePrinter = printerName.replace(/'/g, "''");
-        const cmd =
-          `"${PS_EXE}" -NonInteractive -Command ` +
-          `"$bytes = [System.IO.File]::ReadAllBytes('${safePath}'); ` +
-          `$pq = (New-Object System.Printing.PrintServer).GetPrintQueue('${safePrinter}'); ` +
-          `$job = $pq.AddJob(); ` +
-          `$stream = $job.JobStream; ` +
-          `$stream.Write($bytes, 0, $bytes.Length); ` +
-          `$stream.Close()"`;
-        exec(cmd, { timeout: 15_000 }, err => err ? reject(err) : resolve());
+      const psBin     = tempBin.replace(/'/g, "''");
+      const psPrinter = printerName.replace(/'/g, "''");
+
+      // Build PS1 as array so the closing '@ sits at column 0 (PowerShell requirement)
+      const ps1Lines = [
+        `Add-Type -TypeDefinition @'`,
+        `using System;`,
+        `using System.Runtime.InteropServices;`,
+        `public class WinSpool {`,
+        `    [DllImport("winspool.drv",CharSet=CharSet.Ansi,SetLastError=true)]`,
+        `    public static extern bool OpenPrinter(string n,out IntPtr h,IntPtr d);`,
+        `    [DllImport("winspool.drv",SetLastError=true)]`,
+        `    public static extern bool ClosePrinter(IntPtr h);`,
+        `    [StructLayout(LayoutKind.Sequential,CharSet=CharSet.Ansi)]`,
+        `    public class DI{public string pDocName="Receipt";public string pOutputFile=null;public string pDataType="RAW";}`,
+        `    [DllImport("winspool.drv",CharSet=CharSet.Ansi,SetLastError=true)]`,
+        `    public static extern int StartDocPrinter(IntPtr h,int lv,[In,MarshalAs(UnmanagedType.LPStruct)]DI di);`,
+        `    [DllImport("winspool.drv",SetLastError=true)]`,
+        `    public static extern bool EndDocPrinter(IntPtr h);`,
+        `    [DllImport("winspool.drv",SetLastError=true)]`,
+        `    public static extern bool StartPagePrinter(IntPtr h);`,
+        `    [DllImport("winspool.drv",SetLastError=true)]`,
+        `    public static extern bool EndPagePrinter(IntPtr h);`,
+        `    [DllImport("winspool.drv",SetLastError=true)]`,
+        `    public static extern bool WritePrinter(IntPtr h,IntPtr b,int c,out int w);`,
+        `}`,
+        `'@ -ErrorAction SilentlyContinue`,
+        `$h=[IntPtr]::Zero`,
+        `[WinSpool]::OpenPrinter('${psPrinter}',[ref]$h,[IntPtr]::Zero)|Out-Null`,
+        `if($h-eq[IntPtr]::Zero){throw 'OpenPrinter failed for printer: ${psPrinter}'}`,
+        `try{`,
+        `  $di=New-Object WinSpool+DI`,
+        `  if([WinSpool]::StartDocPrinter($h,1,$di)-le 0){throw 'StartDocPrinter failed'}`,
+        `  try{`,
+        `    [WinSpool]::StartPagePrinter($h)|Out-Null`,
+        `    $b=[System.IO.File]::ReadAllBytes('${psBin}')`,
+        `    $p=[Runtime.InteropServices.Marshal]::AllocHGlobal($b.Length)`,
+        `    [Runtime.InteropServices.Marshal]::Copy($b,0,$p,$b.Length)`,
+        `    $w=0;[WinSpool]::WritePrinter($h,$p,$b.Length,[ref]$w)|Out-Null`,
+        `    [Runtime.InteropServices.Marshal]::FreeHGlobal($p)`,
+        `    [WinSpool]::EndPagePrinter($h)|Out-Null`,
+        `  }finally{[WinSpool]::EndDocPrinter($h)|Out-Null}`,
+        `}finally{[WinSpool]::ClosePrinter($h)|Out-Null}`,
+        `Write-Output 'PRINTED_OK'`,
+      ];
+      writeFileSync(tempPs, ps1Lines.join('\n'), 'utf8');
+
+      const ok = await new Promise<boolean>(resolve => {
+        const cmd = `"${PS_EXE}" -NonInteractive -ExecutionPolicy Bypass -File "${tempPs}"`;
+        exec(cmd, { timeout: 20_000 }, (_err, stdout, stderr) => {
+          if (stdout.includes('PRINTED_OK')) { resolve(true); return; }
+          logger.warn('winspool script stderr:', stderr?.trim() || _err?.message || 'no output');
+          resolve(false);
+        });
       });
+
+      if (!ok) throw new Error('winspool script did not output PRINTED_OK');
       return true;
     } catch (err) {
-      logger.warn('Raw binary print failed, trying Out-Printer fallback:', (err as Error).message);
-      try {
-        await new Promise<void>((resolve, reject) => {
-          const safePath    = tempFile.replace(/'/g, "''");
-          const safePrinter = printerName.replace(/'/g, "''");
-          const cmd = `"${PS_EXE}" -NonInteractive -Command "Get-Content -Path '${safePath}' -Encoding Default | Out-Printer -Name '${safePrinter}'"`;
-          exec(cmd, { timeout: 15_000 }, err => err ? reject(err) : resolve());
-        });
-        logger.warn(`Printed via Out-Printer (no auto-cut) → "${printerName}"`);
-        return true;
-      } catch (err2) {
-        logger.error('Text print failed:', (err2 as Error).message);
-        return false;
-      }
+      logger.error('Raw winspool print failed:', (err as Error).message);
+      return false;
     } finally {
-      try { unlinkSync(tempFile); } catch { /* ignore */ }
+      try { unlinkSync(tempBin); } catch { /* ignore */ }
+      try { unlinkSync(tempPs);  } catch { /* ignore */ }
     }
   }
 
@@ -466,15 +380,20 @@ export class PrinterService {
 
   /**
    * Remove all jobs from the Windows print queue for this printer.
-   * Called after every successful print so the spooler cannot re-send the job
-   * when the printer is power-cycled and reconnects.
+   * Uses both PrintManagement cmdlets and WMI Win32_PrintJob for maximum compatibility.
+   * Called before AND after every print to prevent the spooler from re-sending on reconnect.
    */
   private purgeQueue(printerName: string): Promise<void> {
     return new Promise(resolve => {
       const safe = printerName.replace(/'/g, "''");
+      // WMI Win32_PrintJob works on all Windows editions (Win32_PrintJob.Name = "printer,jobid").
+      // Get-PrintJob/Remove-PrintJob need PrintManagement — try as secondary, swallow errors.
       const cmd =
         `"${PS_EXE}" -NonInteractive -Command ` +
-        `"Get-PrintJob -PrinterName '${safe}' -ErrorAction SilentlyContinue | Remove-PrintJob"`;
+        `"Get-WmiObject Win32_PrintJob -ErrorAction SilentlyContinue | ` +
+        `Where-Object { $_.Name -like '${safe},*' } | ` +
+        `ForEach-Object { $_.Delete() }; ` +
+        `try { Get-PrintJob -PrinterName '${safe}' -ErrorAction SilentlyContinue | Remove-PrintJob -ErrorAction SilentlyContinue } catch {}"`;
       exec(cmd, { timeout: 8000 }, err => {
         if (err) logger.warn(`Queue purge warning for "${printerName}":`, err.message);
         else     logger.info(`Print queue cleared for "${printerName}"`);
@@ -493,6 +412,9 @@ export class PrinterService {
       logger.info('No printer configured — skipping auto-print');
       return { success: true, text };
     }
+
+    // Purge stale jobs BEFORE printing so an old stuck job can't reprint
+    await this.purgeQueue(printerName);
 
     if (await this.printESCPOS(data, printerName)) {
       logger.info(`Receipt printed (ESC/POS) → "${printerName}"`);

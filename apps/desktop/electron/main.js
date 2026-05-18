@@ -98,6 +98,20 @@ function loadDotEnv(envPath) {
   } catch (e) { log(`Could not load .env: ${e.message}`); }
 }
 
+// Permanently intercept process.exit so the server's uncaughtException handler
+// cannot kill the Electron process. Called once at startup, never restored.
+function installExitGuard() {
+  const _orig = process.exit.bind(process);
+  process.exit = (code) => {
+    log(`process.exit(${code}) intercepted — showing error instead of killing app`);
+    diag(`process.exit(${code}) intercepted`);
+    global.__onServerReady = null;
+    showError(`Server exited (code ${code}). Check PostgreSQL is running and port 3001 is free.`);
+  };
+  // Expose original for intentional use (app quit)
+  process._realExit = _orig;
+}
+
 function startServer() {
   if (isDev) return Promise.resolve();
 
@@ -124,28 +138,34 @@ function startServer() {
 
   loadDotEnv(envPath);
 
-  const readyPromise = waitForServerReady(60000);
-
-  // Intercept process.exit so server error handlers can't kill Electron
-  const _origExit = process.exit.bind(process);
-  process.exit = (code) => {
-    log(`Server called process.exit(${code}) — intercepted`);
-    diag(`process.exit(${code}) intercepted`);
-    global.__onServerReady = null;
-    showError(`Server exited unexpectedly (code ${code}). Check if port 3001 is already in use.`);
-  };
-
-  log('Requiring server bundle in-process…');
-  try {
-    require(bundlePath);
-  } catch (err) {
-    process.exit = _origExit;
-    return Promise.reject(new Error(`Server failed to load: ${err.message}`));
+  // Point Prisma at its query engine binary so it doesn't search at runtime.
+  // Without this it may fail to locate the binary on a clean client machine.
+  const prismaEngineFile = path.join(serverDir, 'node_modules', '.prisma', 'client', 'query_engine-windows.dll.node');
+  if (fs.existsSync(prismaEngineFile)) {
+    process.env.PRISMA_QUERY_ENGINE_LIBRARY = prismaEngineFile;
+    log(`Prisma engine: ${prismaEngineFile}`);
+  } else {
+    log(`WARNING: Prisma engine binary not found at: ${prismaEngineFile}`);
   }
 
-  process.exit = _origExit;
-  log('Bundle loaded — waiting for server ready signal…');
-  return readyPromise;
+  const readyPromise = waitForServerReady(60000);
+
+  // Yield to the event loop so the splash window can paint before the
+  // synchronous require() below blocks the main thread for ~2-3 seconds.
+  return new Promise((resolve, reject) => {
+    setTimeout(() => {
+      log('Requiring server bundle in-process…');
+      try {
+        require(bundlePath);
+      } catch (err) {
+        log(`Bundle require threw: ${err.message}`);
+        reject(new Error(`Server failed to load: ${err.message}`));
+        return;
+      }
+      log('Bundle loaded — waiting for server ready signal…');
+      readyPromise.then(resolve).catch(reject);
+    }, 200); // 200 ms is enough for the renderer to paint the splash
+  });
 }
 
 // ── Window ────────────────────────────────────────────────────────────────────
@@ -171,7 +191,9 @@ function createWindow() {
   mainWindow = new BrowserWindow({
     width: 1440, height: 900, minWidth: 1200, minHeight: 700,
     frame: false, titleBarStyle: 'hidden', backgroundColor: '#0d1117',
-    show: false,
+    // show: true so the splash is visible even if the server takes time to load.
+    // backgroundColor matches the splash so there is no visible flash.
+    show: true,
     webPreferences: {
       preload: path.join(__dirname, 'preload.js'),
       contextIsolation: true,
@@ -180,7 +202,6 @@ function createWindow() {
     },
   });
   mainWindow.loadURL(SPLASH);
-  mainWindow.once('ready-to-show', () => { diag('ready-to-show'); mainWindow.show(); });
   mainWindow.on('closed', () => { diag('window closed'); mainWindow = null; });
 }
 
@@ -222,6 +243,9 @@ button{margin-top:20px;padding:10px 28px;background:#f97316;color:white;border:n
 // ── App lifecycle ─────────────────────────────────────────────────────────────
 diag('Registering app events…');
 
+// Install the exit guard early — before any server code runs
+installExitGuard();
+
 app.on('second-instance', () => {
   if (mainWindow) { if (mainWindow.isMinimized()) mainWindow.restore(); mainWindow.focus(); }
 });
@@ -247,7 +271,12 @@ app.whenReady().then(async () => {
 
 diag('Module load complete — waiting for ready event');
 
-app.on('window-all-closed', () => { if (process.platform !== 'darwin') app.quit(); });
+app.on('window-all-closed', () => {
+  if (process.platform !== 'darwin') {
+    if (process._realExit) process._realExit(0);
+    else app.quit();
+  }
+});
 app.on('activate', () => { if (BrowserWindow.getAllWindows().length === 0) createWindow(); });
 app.on('will-quit', () => { diag('will-quit'); globalShortcut.unregisterAll(); });
 
