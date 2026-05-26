@@ -57,17 +57,20 @@ export class AuthService {
 
     logger.info(`User logged in: ${user.email}`);
 
+    // eslint-disable-next-line @typescript-eslint/no-unused-vars
     const { password: _p, ...safeUser } = user;
     return { user: safeUser, tokens };
   }
 
   async loginWithPin(pin: string) {
+        const normalizedPin = pin.trim();
     const users = await prisma.user.findMany({ where: { isActive: true, pin: { not: null } } });
 
     for (const user of users) {
-      if (user.pin && await bcrypt.compare(pin, user.pin)) {
+      if (user.pin && await this.isValidPin(normalizedPin, user.pin)) {
         await prisma.user.update({ where: { id: user.id }, data: { lastLogin: new Date() } });
         const tokens = this.generateTokens(user.id, user.email, user.role);
+        // eslint-disable-next-line @typescript-eslint/no-unused-vars
         const { password: _p, pin: _pin, ...safeUser } = user;
         return { user: safeUser, tokens };
       }
@@ -75,7 +78,16 @@ export class AuthService {
 
     throw new AppError('Invalid PIN', 401);
   }
+private async isValidPin(inputPin: string, storedPin: string) {
+    // Support both hashed pins and legacy plain-text pins already in DB.
+    try {
+      if (await bcrypt.compare(inputPin, storedPin)) return true;
+    } catch {
+      // Non-bcrypt value (e.g. legacy plain-text PIN), fall back to direct match.
+    }
 
+    return inputPin === storedPin;
+  }
   async refreshTokens(refreshToken: string) {
     const stored = await prisma.refreshToken.findUnique({ where: { token: refreshToken } });
     if (!stored || stored.expiresAt < new Date()) {
