@@ -1,9 +1,22 @@
 import { PrismaClient } from '@prisma/client';
+import dotenv from 'dotenv';
+import path from 'path';
 import bcrypt from 'bcryptjs';
 import jwt from 'jsonwebtoken';
 import { v4 as uuidv4 } from 'uuid';
 import { AppError } from '../middleware/error.middleware';
 import { logger } from '../utils/logger';
+
+const envCandidates = [
+  path.resolve(process.cwd(), '.env'),
+  path.resolve(process.cwd(), 'apps/server/.env'),
+  path.resolve(__dirname, '../../.env'),
+];
+
+for (const envPath of envCandidates) {
+  dotenv.config({ path: envPath, override: false });
+  if (process.env.DATABASE_URL) break;
+}
 
 const prisma = new PrismaClient();
 
@@ -62,12 +75,16 @@ export class AuthService {
     return { user: safeUser, tokens };
   }
 
-  async loginWithPin(pin: string) {
-        const normalizedPin = pin.trim();
-    const users = await prisma.user.findMany({ where: { isActive: true, pin: { not: null } } });
+  async loginWithPin(pin: string | number) {
+    const normalizedPin = String(pin).trim();
+
+    if (!/^\d{4}$/.test(normalizedPin)) {
+      throw new AppError('PIN must be a 4-digit code', 400);
+    }
+    const users = await this.getActiveUsersWithPin();
 
     for (const user of users) {
-      if (user.pin && await this.isValidPin(normalizedPin, user.pin)) {
+          if (user.pin && await this.isValidPin(normalizedPin, user.pin)) {
         await prisma.user.update({ where: { id: user.id }, data: { lastLogin: new Date() } });
         const tokens = this.generateTokens(user.id, user.email, user.role);
         // eslint-disable-next-line @typescript-eslint/no-unused-vars
@@ -78,7 +95,25 @@ export class AuthService {
 
     throw new AppError('Invalid PIN', 401);
   }
-private async isValidPin(inputPin: string, storedPin: string) {
+  private async getActiveUsersWithPin() {
+    try {
+      return await prisma.user.findMany({ where: { isActive: true, pin: { not: null } } });
+    } catch (err: unknown) {
+      const message = err instanceof Error ? err.message : String(err);
+
+      if (message.includes('DATABASE_URL')) {
+        const attemptedPaths = envCandidates.join(', ');
+        throw new AppError(
+          `Server is not configured: DATABASE_URL is missing. Create apps/server/.env from apps/server/.env.example and set DATABASE_URL. Tried: ${attemptedPaths}`,
+          500,
+        );
+      }
+
+      throw err;
+    }
+  }
+
+  private async isValidPin(inputPin: string, storedPin: string) {
     // Support both hashed pins and legacy plain-text pins already in DB.
     try {
       if (await bcrypt.compare(inputPin, storedPin)) return true;
