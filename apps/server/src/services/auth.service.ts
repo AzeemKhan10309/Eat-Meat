@@ -7,16 +7,31 @@ import { v4 as uuidv4 } from 'uuid';
 import { AppError } from '../middleware/error.middleware';
 import { logger } from '../utils/logger';
 
-const envCandidates = [
+const serverRoot = path.resolve(__dirname, '../..');
+const repoRoot = path.resolve(serverRoot, '../..');
+
+const envCandidates = Array.from(new Set([
   path.resolve(process.cwd(), '.env'),
-  path.resolve(process.cwd(), 'apps/server/.env'),
-  path.resolve(__dirname, '../../.env'),
-];
+
+  path.resolve(serverRoot, '.env'),
+  path.resolve(repoRoot, '.env'),
+  path.resolve(serverRoot, '.env.example'),
+]));
 
 for (const envPath of envCandidates) {
   dotenv.config({ path: envPath, override: false });
   if (process.env.DATABASE_URL) break;
 }
+const configuredDatabaseUrl = process.env.DATABASE_URL?.trim();
+
+if (!configuredDatabaseUrl) {
+  const attemptedPaths = envCandidates.join(', ');
+  throw new Error(
+    `Server is not configured: DATABASE_URL is missing. Create apps/server/.env from apps/server/.env.example and set DATABASE_URL. Tried: ${attemptedPaths}`,
+  );
+}
+
+process.env.DATABASE_URL = configuredDatabaseUrl;
 
 const prisma = new PrismaClient();
 
@@ -104,8 +119,7 @@ export class AuthService {
       if (message.includes('DATABASE_URL')) {
         const attemptedPaths = envCandidates.join(', ');
         throw new AppError(
-          `Server is not configured: DATABASE_URL is missing. Create apps/server/.env from apps/server/.env.example and set DATABASE_URL. Tried: ${attemptedPaths}`,
-          500,
+          `Server is not configured: DATABASE_URL is missing. Create apps/server/.env from apps/server/.env.example and set DATABASE_URL. Note: .env.example is fallback only. Tried: ${attemptedPaths}`,          500,
         );
       }
 
